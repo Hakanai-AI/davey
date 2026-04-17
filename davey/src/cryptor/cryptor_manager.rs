@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 
 use crate::errors::ExpiringCipherError;
 
-use super::{CIPHER_EXPIRY, MAX_MISSING_NONCES};
+use super::{CIPHER_EXPIRY, MAX_MISSING_NONCES, NONCE_REORDER_WINDOW};
 
 use super::{aead_cipher::AeadCipher, hash_ratchet::HashRatchet, *};
 
@@ -71,8 +71,23 @@ impl CipherManager {
     }
 
     let wrapped_big_nonce = compute_wrapped_big_nonce(generation, nonce);
-    wrapped_big_nonce > self.newest_processed_nonce.unwrap()
-      || self.missing_nonces.contains(&wrapped_big_nonce)
+    let newest = self.newest_processed_nonce.unwrap();
+
+    // Accept packets ahead of our newest seen nonce (normal forward progress).
+    if wrapped_big_nonce > newest {
+      return true;
+    }
+
+    // Accept packets that are already tracked as missing (filled gaps from report_cipher_success).
+    if self.missing_nonces.contains(&wrapped_big_nonce) {
+      return true;
+    }
+
+    // Accept packets within the reorder window — UDP delivers frames out-of-order
+    // regularly (network jitter, Discord's DAVE path), so we must tolerate nonces
+    // arriving up to NONCE_REORDER_WINDOW slots behind the newest seen nonce.
+    // Without this, ~95% of valid packets are dropped as "already seen".
+    wrapped_big_nonce >= newest.saturating_sub(NONCE_REORDER_WINDOW)
   }
 
   pub fn get_cipher(&mut self, generation: u32) -> Option<&mut AeadCipher> {
@@ -94,7 +109,11 @@ impl CipherManager {
       return None;
     }
 
-    let ratchet_lifetime_sec = (self.clock.elapsed() - self.ratchet_creation).as_secs();
+    // Use at least 1 second so that frames arriving immediately after a key transition
+    // (ratchet_lifetime_sec == 0) are not rejected when the sender is already at generation > 0.
+    // This happens during MLS epoch transitions where the new ratchet is installed on the receiver
+    // moments before the first encrypted packet with the new key arrives.
+    let ratchet_lifetime_sec = (self.clock.elapsed() - self.ratchet_creation).as_secs().max(1);
     let max_lifetime_frames = MAX_FRAMES_PER_SECOND * ratchet_lifetime_sec;
     let max_lifetime_generations = max_lifetime_frames >> RATCHET_GENERATION_SHIFT_BITS;
     if generation > max_lifetime_generations as u32 {

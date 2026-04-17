@@ -29,6 +29,10 @@ pub const RATCHET_EXPIRY: Duration = Duration::new(10, 0);
 /** Behavior constants */
 pub const MAX_GENERATION_GAP: u32 = 250;
 pub const MAX_MISSING_NONCES: u64 = 1000;
+/// How many nonces behind the newest we still accept (to tolerate UDP reordering/jitter).
+/// Discord's DAVE packets arrive out-of-order regularly; without this window ~95% of
+/// packets are rejected by can_process_nonce() as "already seen".
+pub const NONCE_REORDER_WINDOW: u64 = 512;
 pub const GENERATION_WRAP: u32 = 1 << (8 * RATCHET_GENERATION_BYTES);
 pub const MAX_FRAMES_PER_SECOND: u64 = 50 + 2 * 60; // 50 audio frames + 2 * 60fps video streams
 
