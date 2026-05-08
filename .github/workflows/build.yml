@@ -1,0 +1,133 @@
+name: Build patched binaries
+
+env:
+  DEBUG: napi:*
+  APP_NAME: davey
+  MACOSX_DEPLOYMENT_TARGET: '10.13'
+  CARGO_INCREMENTAL: '1'
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - 'patch/**'
+    paths:
+      - 'davey-node/**'
+      - 'davey/**'
+      - '.github/workflows/build.yml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: davey-node
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            build: pnpm build --target x86_64-apple-darwin
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            build: pnpm build --target aarch64-apple-darwin
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            build: pnpm build --target x86_64-unknown-linux-gnu --use-napi-cross
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            build: pnpm build --target aarch64-unknown-linux-gnu --use-napi-cross
+    name: Build - ${{ matrix.settings.target }}
+    runs-on: ${{ matrix.settings.host }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ./davey-node/package.json
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ./davey-node/pnpm-lock.yaml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.settings.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .cargo-cache
+            target/
+            ~/.napi-rs
+          key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build
+        run: ${{ matrix.settings.build }}
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.settings.target }}
+          path: './davey-node/*.node'
+          if-no-files-found: error
+
+  commit-to-dist:
+    name: Commit binaries to dist/patched-root
+    needs: [build]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: '.'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dist/patched-root
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Copy .node files to root
+        run: |
+          find artifacts -name '*.node' -exec cp {} . \;
+          ls -la *.node
+
+      - name: Commit and push binaries
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add *.node
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update patched binaries from CI [skip ci]"
+            git push origin dist/patched-root
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
