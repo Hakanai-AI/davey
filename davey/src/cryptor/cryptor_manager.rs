@@ -113,7 +113,9 @@ impl CipherManager {
     // (ratchet_lifetime_sec == 0) are not rejected when the sender is already at generation > 0.
     // This happens during MLS epoch transitions where the new ratchet is installed on the receiver
     // moments before the first encrypted packet with the new key arrives.
-    let ratchet_lifetime_sec = (self.clock.elapsed() - self.ratchet_creation).as_secs().max(1);
+    let ratchet_lifetime_sec = (self.clock.elapsed() - self.ratchet_creation)
+      .as_secs()
+      .max(1);
     let max_lifetime_frames = MAX_FRAMES_PER_SECOND * ratchet_lifetime_sec;
     let max_lifetime_generations = max_lifetime_frames >> RATCHET_GENERATION_SHIFT_BITS;
     if generation > max_lifetime_generations as u32 {
